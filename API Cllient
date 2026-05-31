@@ -1,0 +1,67 @@
+import requests # 웹페이지에 접속하거나 데이터를 요청할 때 사용하는 필수 라이브러리입니다.
+import time     # 시간을 다루는 라이브러리 (대기 시간 부여 등에 사용)
+from logger import log # 우리가 만든 logger.py에서 log 객체를 가져옵니다.
+import config   # 환경변수와 상수들이 있는 config.py를 가져옵니다.
+
+class APIClient:
+    """
+    이 클래스는 한국투자증권 서버와 실제로 통신(편지 배달)하는 우체부 역할을 합니다.
+    각각의 기능(계좌조회, 주문 등)에서 이 클래스를 불러와서 사용합니다.
+    """
+    
+    # __init__ 은 이 클래스가 처음 생성될 때 실행되는 초기화 함수입니다.
+    def __init__(self, token=None):
+        self.token = token   # 나중에 발급받을 접근 권한증명서(토큰)를 보관합니다.
+        self.timeout = 10    # 서버가 응답이 없을 때 최대 10초까지만 기다리겠다는 뜻입니다.
+
+    def _get_base_headers(self, tr_id=""):
+        """
+        API 요청 시 편지봉투(Header)에 들어가야 할 필수 정보들을 만들어줍니다.
+        한국투자증권 API는 헤더에 반드시 앱키, 앱시크릿, TR_ID를 넣으라고 요구합니다.
+        """
+        headers = {
+            "content-type": "application/json; charset=utf-8", # 주고받는 데이터 형식은 JSON(문자열 형태)
+            "appkey": config.APP_KEY,                          # 우리의 아이디 같은 개념
+            "appsecret": config.APP_SECRET,                    # 우리의 비밀번호 같은 개념
+            "tr_id": tr_id,                                    # 거래 종류 아이디 (예: 현재가조회, 매수주문 등)
+        }
+        # 토큰(방문증)이 있다면 봉투에 같이 넣어줍니다.
+        if self.token:
+            headers["authorization"] = f"Bearer {self.token}"
+        return headers
+
+    def request(self, method, endpoint, tr_id="", payload=None, params=None):
+        """
+        실제로 서버에 데이터를 달라고 요청(GET)하거나 보내는(POST) 함수입니다.
+        """
+        url = f"{config.BASE_URL}{endpoint}" # 예: https://.../uapi/domestic-stock/...
+        headers = self._get_base_headers(tr_id)
+        
+        retries = 3 # 만약 인터넷이 끊기거나 서버 에러가 나면 최대 3번까지 재시도합니다.
+        
+        for attempt in range(retries):
+            try:
+                # method가 GET이면 데이터를 가져오는 요청입니다. (주로 조회용)
+                if method.upper() == "GET":
+                    resp = requests.get(url, headers=headers, params=params, timeout=self.timeout)
+                # method가 POST이면 데이터를 서버에 쓰는(보내는) 요청입니다. (주로 주문용)
+                else:
+                    resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+                
+                # 서버가 404(페이지 없음)나 500(서버 에러) 같은 에러 코드를 보내면 
+                # 파이썬 에러를 발생시킵니다.
+                resp.raise_for_status() 
+                
+                # 성공했다면 응답받은 데이터를 파이썬 딕셔너리(사전) 형태로 변환하여 돌려줍니다.
+                return resp.json()
+                
+            except requests.exceptions.RequestException as e:
+                # 통신 중 에러가 발생한 경우 (예: 와이파이 끊김, 서버 지연)
+                log.warning(f"API 요청 실패 (시도 횟수: {attempt+1}/{retries}): {e}")
+                
+                if attempt < retries - 1:
+                    time.sleep(2) # 곧바로 재시도하지 않고 2초 숨을 고른 뒤 다시 요청합니다.
+                else:
+                    # 3번 다 실패하면 에러를 기록하고 None(없음)을 반환합니다.
+                    log.error(f"API 요청 최종 실패 (주소: {endpoint})")
+                    return None
