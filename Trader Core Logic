@@ -1,0 +1,97 @@
+import time
+from datetime import datetime
+from logger import log
+import config
+from market_data import MarketData
+from account import Account
+from orders import Order
+
+class AutoTrader:
+    """
+    이 프로그램의 '두뇌' 역할을 하는 메인 비즈니스 로직입니다.
+    시간을 체크하고 -> 현재가를 보고 -> 잔고를 보고 -> 주문을 넣고 -> 확인하는 흐름을 통제합니다.
+    """
+    def __init__(self, token):
+        # 앞서 만든 클래스들(도구들)을 생성해서 준비해둡니다.
+        self.market = MarketData(token)
+        self.account = Account(token)
+        self.order = Order(token)
+
+    def _is_trading_window(self):
+        """현재 시간이 우리가 정한 장 운영 시간(09:10 ~ 15:30) 사이인지 확인합니다."""
+        now_str = datetime.now().strftime("%H:%M:%S") # 현재 시간을 '14:30:00' 형태로 추출
+        return config.START_TIME <= now_str <= config.END_TIME
+
+    def _has_ended(self):
+        """오늘 매매 시간이 완전히 끝났는지(15:30 이후) 확인합니다."""
+        now_str = datetime.now().strftime("%H:%M:%S")
+        return now_str > config.END_TIME
+
+    def run(self):
+        """자동 매매가 돌아가는 메인 반복문(Loop)입니다."""
+        log.info("자동매매 로직 봇을 가동합니다.")
+        log.info(f"타겟: {config.SYMBOL}, 작동 시간: {config.START_TIME} ~ {config.END_TIME}")
+
+        # while True: 는 프로그램이 강제로 꺼지기 전까지 무한히 반복하겠다는 뜻입니다.
+        while True:
+            
+            # 1. 퇴근 시간(15:30)이 지났는지 가장 먼저 검사합니다.
+            if self._has_ended():
+                log.info("지정된 매매 시간(15:30)이 지났으므로 프로그램을 안전하게 종료합니다.")
+                break # 반복문을 깨고 나갑니다. (프로그램 종료)
+
+            # 2. 아직 장이 안 열렸다면(09:10 이전) 기다립니다.
+            if not self._is_trading_window():
+                log.info("아직 매매 가능 시간이 아닙니다. 60초간 대기합니다...")
+                time.sleep(60) # 60초 멈춤
+                continue # 아래 코드는 무시하고 다시 while문 처음으로 돌아갑니다.
+
+            # ==========================================================
+            # 여기서부터 본격적인 1회전(1 Cycle) 매매 로직 시작입니다.
+            # ==========================================================
+            log.info("=" * 40)
+            
+            # [단계 1] 현재 주식 시장 가격 확인
+            current_price = self.market.get_current_price(config.SYMBOL)
+            if not current_price: # 에러가 나서 못 가져왔다면
+                time.sleep(config.POLL_INTERVAL_SECONDS) # 30초 쉬었다가
+                continue # 다시 처음으로 돌아가서 재도전
+            log.info(f"[시장조회] 삼성전자 현재가: {current_price:,}원")
+
+            # [단계 2] 내 지갑 사정(주식 보유량, 남은 현금) 검사
+            qty_before, balance_before = self.account.get_holdings_and_balance()
+            log.info(f"[주문 전 지갑 검사] 보유 주식: {qty_before}주 / 남은 현금: {balance_before:,}원")
+
+            # [단계 3] 조건에 맞춰 주문 넣기
+            # 요구사항 1: 주식이 1주라도 있다면, 현재가보다 2000원 '비싸게' 팔아달라고 올립니다.
+            if qty_before > 0:
+                sell_price = current_price + config.PRICE_DIFF
+                self.order.sell(config.SYMBOL, sell_price, qty=1)
+            else:
+                log.info("현재 삼성전자 주식을 가지고 있지 않아 매도 주문을 스킵합니다.")
+
+            # 요구사항 2: 돈이 충분히 있다면, 현재가보다 2000원 '싸게' 사겠다고 올립니다.
+            buy_price = current_price - config.PRICE_DIFF
+            if balance_before >= buy_price:
+                self.order.buy(config.SYMBOL, buy_price, qty=1)
+            else:
+                log.info(f"계좌에 현금이 부족하여 매수 주문을 스킵합니다. (필요 현금: {buy_price}원)")
+
+            # [단계 4] 증권사 컴퓨터가 주문을 처리할 시간을 주고 기다립니다. (연속 요청 방지)
+            log.info(f"주문 프로세스 종료. 체결을 기다리며 {config.POLL_INTERVAL_SECONDS}초간 휴식합니다...")
+            time.sleep(config.POLL_INTERVAL_SECONDS)
+
+            # [단계 5] 체결이 되었는지 지갑(계좌)을 다시 열어서 확인합니다.
+            qty_after, balance_after = self.account.get_holdings_and_balance()
+            log.info(f"[주문 후 지갑 검사] 보유 주식: {qty_after}주 / 남은 현금: {balance_after:,}원")
+
+            # 주문 전 지갑 상태와 주문 후 지갑 상태가 다르다면 누군가 내 주문을 사거나 팔았다는 뜻입니다!
+            if qty_after != qty_before or balance_after != balance_before:
+                log.info("💡 지갑 내용물(잔고/수량)이 변했습니다! 방금 넣은 주문이 시장에서 체결된 것 같습니다!")
+            else:
+                log.info("지갑 내용물이 그대로입니다. 방금 넣은 주문이 아직 체결되지 않았습니다.")
+
+            log.info("=" * 40)
+            
+            # API 제한(Rate limit)에 걸리지 않도록 1회전이 끝날 때마다 다시 30초 넉넉하게 쉬어줍니다.
+            time.sleep(config.POLL_INTERVAL_SECONDS)
