@@ -1,0 +1,38 @@
+import logging # 로그(기록)를 남기기 위한 파이썬 기본 라이브러리입니다.
+import sys     # 시스템 관련 설정을 위한 라이브러리 (콘솔 화면 출력을 위해 사용)
+
+def setup_logger(name="auto_trader"):
+    """
+    이 함수는 화면(터미널)과 파일(trading.log) 양쪽 모두에 
+    동시에 진행 상황을 기록해주는 로거(Logger)를 만듭니다.
+    """
+    # 1. 로거 객체 생성
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO) # INFO 레벨(일반적인 정보) 이상의 모든 로그를 기록하겠다는 뜻
+
+    # 중복 로깅 방지: 이미 로거가 세팅되어 있다면 다시 세팅하지 않고 그대로 반환합니다.
+    if logger.hasHandlers():
+        return logger
+
+    # 2. 로그가 출력될 형태(포맷) 지정
+    # 예: [2026-05-31 09:15:00] [INFO] 삼성전자 현재가: 80,000원
+    formatter = logging.Formatter(
+        '[%(asctime)s] [%(levelname)s] %(message)s', 
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    # 3. 콘솔(화면) 출력 설정
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler) # 로거에 화면 출력 기능 추가
+
+    # 4. 텍스트 파일 저장 설정
+    # encoding='utf-8'을 해줘야 한글이 깨지지 않고 파일에 저장됩니다.
+    file_handler = logging.FileHandler("trading.log", encoding='utf-8')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler) # 로거에 파일 저장 기능 추가
+
+    return logger
+
+# 다른 파일에서 이 log 객체를 import해서 사용하게 됩니다. (예: log.info("안녕!"))
+log = setup_logger()
