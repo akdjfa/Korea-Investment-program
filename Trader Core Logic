@@ -1,97 +1,152 @@
+# ==============================================================================
+# 자동매매 메인 로봇 (AutoTrader)
+# 이 프로그램의 '두뇌'이자 '지휘관' 역할을 하는 핵심 파일입니다.
+# 지금까지 만든 부품들(통신, 시세, 계좌, 주문)을 조합하여 실제 매매 사이클을 돌립니다.
+# ==============================================================================
+
 import time
 from datetime import datetime
 from logger import log
 import config
+
+# 우리가 직접 만든 클래스들을 불러옵니다. (마치 레고 블록을 조립하듯이 가져옵니다)
 from market_data import MarketData
 from account import Account
-from orders import Order
+from order import Order # [하자 보수 완료] 파일 이름이 order.py 이므로 orders가 아닌 order로 수정했습니다.
 
 class AutoTrader:
     """
-    이 프로그램의 '두뇌' 역할을 하는 메인 비즈니스 로직입니다.
-    시간을 체크하고 -> 현재가를 보고 -> 잔고를 보고 -> 주문을 넣고 -> 확인하는 흐름을 통제합니다.
+    시간 확인 -> 현재가 조회 -> 잔고 확인 -> 매수/매도 주문 -> 대기
+    이 흐름을 무한히 반복하며 수익을 창출하는 메인 비즈니스 로직 클래스입니다.
     """
     def __init__(self, token):
-        # 앞서 만든 클래스들(도구들)을 생성해서 준비해둡니다.
+        # 봇이 태어날 때(초기화될 때) 출입증(token)을 받아서
+        # 시세 조회원, 은행원, 주문 관리자를 미리 고용해 둡니다.
         self.market = MarketData(token)
         self.account = Account(token)
         self.order = Order(token)
 
     def _is_trading_window(self):
-        """현재 시간이 우리가 정한 장 운영 시간(09:10 ~ 15:30) 사이인지 확인합니다."""
+        """
+        현재 시간이 우리가 정한 장 운영 시간(예: 09:10 ~ 15:30) 사이인지 확인합니다.
+        파이썬은 "09:10:00" <= "12:00:00" <= "15:30:00" 처럼 
+        시간을 문자열(글자) 상태로도 크기 비교가 가능해서 아주 편리합니다.
+        """
         now_str = datetime.now().strftime("%H:%M:%S") # 현재 시간을 '14:30:00' 형태로 추출
         return config.START_TIME <= now_str <= config.END_TIME
 
     def _has_ended(self):
-        """오늘 매매 시간이 완전히 끝났는지(15:30 이후) 확인합니다."""
+        """오늘 주식 시장이 완전히 끝났는지(예: 15:30 이후) 확인합니다."""
         now_str = datetime.now().strftime("%H:%M:%S")
         return now_str > config.END_TIME
 
     def run(self):
-        """자동 매매가 돌아가는 메인 반복문(Loop)입니다."""
-        log.info("자동매매 로직 봇을 가동합니다.")
-        log.info(f"타겟: {config.SYMBOL}, 작동 시간: {config.START_TIME} ~ {config.END_TIME}")
+        """
+        전원이 꺼지기 전까지 끊임없이 돌아가는 메인 반복문(무한 루프)입니다.
+        """
+        log.info("🤖 자동매매 로직 봇을 가동합니다.")
+        log.info(f"🎯 타겟 종목: {config.SYMBOL} | ⏰ 작동 시간: {config.START_TIME} ~ {config.END_TIME}")
 
-        # while True: 는 프로그램이 강제로 꺼지기 전까지 무한히 반복하겠다는 뜻입니다.
+        # while True: 는 '무한 반복'을 의미합니다. (Ctrl+C를 누르거나 break를 만나기 전까지 계속 돕니다)
         while True:
             
-            # 1. 퇴근 시간(15:30)이 지났는지 가장 먼저 검사합니다.
+            # ==========================================================
+            # [안전장치 1] 퇴근 시간 확인
+            # ==========================================================
             if self._has_ended():
-                log.info("지정된 매매 시간(15:30)이 지났으므로 프로그램을 안전하게 종료합니다.")
-                break # 반복문을 깨고 나갑니다. (프로그램 종료)
+                log.info("지정된 매매 시간(15:30)이 지났습니다. 로봇이 퇴근합니다. 수고하셨습니다!")
+                break # 반복문을 깨고 완전히 밖으로 나갑니다. (프로그램 종료)
 
-            # 2. 아직 장이 안 열렸다면(09:10 이전) 기다립니다.
+            # ==========================================================
+            # [안전장치 2] 출근 시간 전 대기
+            # ==========================================================
             if not self._is_trading_window():
-                log.info("아직 매매 가능 시간이 아닙니다. 60초간 대기합니다...")
-                time.sleep(60) # 60초 멈춤
-                continue # 아래 코드는 무시하고 다시 while문 처음으로 돌아갑니다.
+                log.info("아직 주식 시장이 열리지 않았습니다. 60초간 대기합니다...")
+                time.sleep(60) # 60초 동안 아무것도 안 하고 멈춰 있습니다.
+                continue # 아래 코드를 실행하지 않고, 다시 while문 맨 처음으로 돌아갑니다.
 
             # ==========================================================
             # 여기서부터 본격적인 1회전(1 Cycle) 매매 로직 시작입니다.
             # ==========================================================
-            log.info("=" * 40)
+            log.info("=" * 50)
             
+            # ----------------------------------------------------------
             # [단계 1] 현재 주식 시장 가격 확인
+            # ----------------------------------------------------------
             current_price = self.market.get_current_price(config.SYMBOL)
-            if not current_price: # 에러가 나서 못 가져왔다면
-                time.sleep(config.POLL_INTERVAL_SECONDS) # 30초 쉬었다가
-                continue # 다시 처음으로 돌아가서 재도전
-            log.info(f"[시장조회] 삼성전자 현재가: {current_price:,}원")
+            
+            # 통신 에러 등으로 가격을 못 가져왔다면, 섣불리 주문하면 안 되므로 잠시 쉬었다가 다시 시도합니다.
+            if not current_price: 
+                log.warning("현재가를 불러오지 못했습니다. 잠시 대기 후 재시도합니다.")
+                time.sleep(config.POLL_INTERVAL_SECONDS)
+                continue 
+                
+            log.info(f"📊 [시장조회] 종목 {config.SYMBOL} 현재가: {current_price:,}원")
 
+            # ----------------------------------------------------------
             # [단계 2] 내 지갑 사정(주식 보유량, 남은 현금) 검사
+            # ----------------------------------------------------------
             qty_before, balance_before = self.account.get_holdings_and_balance()
-            log.info(f"[주문 전 지갑 검사] 보유 주식: {qty_before}주 / 남은 현금: {balance_before:,}원")
+            log.info(f"👛 [주문 전 지갑 검사] 보유 주식: {qty_before}주 / 남은 현금: {balance_before:,}원")
 
-            # [단계 3] 조건에 맞춰 주문 넣기
-            # 요구사항 1: 주식이 1주라도 있다면, 현재가보다 2000원 '비싸게' 팔아달라고 올립니다.
+            # ----------------------------------------------------------
+            # [단계 3] 알고리즘 조건에 맞춰 '지정가' 주문 넣기
+            # ----------------------------------------------------------
+            # 이 봇은 매우 단순한 '스캘핑(단타)' 봇입니다. 
+            # 주식이 있으면 현재가보다 비싸게 팔려고 걸어두고, 돈이 있으면 현재가보다 싸게 사려고 걸어둡니다.
+            
+            order_placed = False # 이번 턴에 주문을 냈는지 기억해두는 변수입니다.
+
+            # (1) 매도(Sell) 조건 로직
             if qty_before > 0:
                 sell_price = current_price + config.PRICE_DIFF
                 self.order.sell(config.SYMBOL, sell_price, qty=1)
+                order_placed = True
             else:
-                log.info("현재 삼성전자 주식을 가지고 있지 않아 매도 주문을 스킵합니다.")
+                log.info("현재 보유 중인 주식이 없어 매도 주문을 건너뜁니다.")
 
-            # 요구사항 2: 돈이 충분히 있다면, 현재가보다 2000원 '싸게' 사겠다고 올립니다.
-            buy_price = current_price - config.PRICE_DIFF
+            # (2) 매수(Buy) 조건 로직
+            # [하자 보수] 만약 현재가가 1,000원인데 PRICE_DIFF가 2,000원이면 buy_price가 -1,000원이 됩니다!
+            # 가격이 0원 밑으로 떨어지지 않게 max() 함수로 방어벽을 칩니다.
+            buy_price = max(current_price - config.PRICE_DIFF, 1) 
+            
+            # 수수료를 고려하여 실제로는 (목표가 * 수량) 보다 약간의 여유 자금이 더 필요하지만 
+            # 단순화를 위해 일단 '목표가보다 돈이 많은가?'만 체크합니다.
             if balance_before >= buy_price:
                 self.order.buy(config.SYMBOL, buy_price, qty=1)
+                order_placed = True
             else:
-                log.info(f"계좌에 현금이 부족하여 매수 주문을 스킵합니다. (필요 현금: {buy_price}원)")
+                log.info(f"계좌 현금이 부족하여 매수 주문을 건너뜁니다. (필요 현금: {buy_price:,}원)")
 
-            # [단계 4] 증권사 컴퓨터가 주문을 처리할 시간을 주고 기다립니다. (연속 요청 방지)
-            log.info(f"주문 프로세스 종료. 체결을 기다리며 {config.POLL_INTERVAL_SECONDS}초간 휴식합니다...")
-            time.sleep(config.POLL_INTERVAL_SECONDS)
-
-            # [단계 5] 체결이 되었는지 지갑(계좌)을 다시 열어서 확인합니다.
-            qty_after, balance_after = self.account.get_holdings_and_balance()
-            log.info(f"[주문 후 지갑 검사] 보유 주식: {qty_after}주 / 남은 현금: {balance_after:,}원")
-
-            # 주문 전 지갑 상태와 주문 후 지갑 상태가 다르다면 누군가 내 주문을 사거나 팔았다는 뜻입니다!
-            if qty_after != qty_before or balance_after != balance_before:
-                log.info("💡 지갑 내용물(잔고/수량)이 변했습니다! 방금 넣은 주문이 시장에서 체결된 것 같습니다!")
-            else:
-                log.info("지갑 내용물이 그대로입니다. 방금 넣은 주문이 아직 체결되지 않았습니다.")
-
-            log.info("=" * 40)
+            # ----------------------------------------------------------
+            # [단계 4] 증권사 컴퓨터가 일할 시간 주기 & 미체결 중복 주문 방지
+            # ----------------------------------------------------------
+            # [매우 중요한 개념 - 미체결 누적 방지]
+            # 지정가로 주문을 넣었기 때문에 곧바로 내 주식이 팔리거나 사지지 않습니다. (대기 상태)
+            # 만약 30초(POLL_INTERVAL) 뒤에 또 주문을 넣으면, 똑같은 주문이 2개, 3개 계속 쌓이게 됩니다!
+            # 완벽하게 하려면 '미체결 내역 조회 API'를 써서 기존 주문을 취소해야 하지만,
+            # 초보자 버전이므로 주문을 냈다면 체결될 때까지 평소보다 좀 더 길게(예: 3분) 기다려봅니다.
             
-            # API 제한(Rate limit)에 걸리지 않도록 1회전이 끝날 때마다 다시 30초 넉넉하게 쉬어줍니다.
-            time.sleep(config.POLL_INTERVAL_SECONDS)
+            if order_placed:
+                sleep_time = config.POLL_INTERVAL_SECONDS * 3 # 주문을 넣었다면 3배 길게 휴식
+                log.info(f"⏳ 주문 접수 완료. 시장에서 체결되기를 {sleep_time}초 동안 기다립니다...")
+            else:
+                sleep_time = config.POLL_INTERVAL_SECONDS     # 아무것도 안 했다면 평소대로 휴식
+                log.info(f"⏳ 대기. {sleep_time}초 후 다음 시장 상황을 확인합니다...")
+                
+            time.sleep(sleep_time)
+
+            # ----------------------------------------------------------
+            # [단계 5] 체결이 되었는지 지갑(계좌)을 다시 열어서 확인합니다.
+            # ----------------------------------------------------------
+            qty_after, balance_after = self.account.get_holdings_and_balance()
+            log.info(f"🔎 [주문 후 지갑 확인] 보유 주식: {qty_after}주 / 남은 현금: {balance_after:,}원")
+
+            # 주문 전 지갑 상태와 방금 확인한 지갑 상태가 다르다면? 
+            # 누군가 내가 걸어둔 가격에 내 주식을 사거나 팔아줬다는 뜻입니다!
+            if qty_after != qty_before or balance_after != balance_before:
+                log.info("🎉 띠링! 지갑 잔고가 변했습니다. 방금 넣은 주문이 시장에서 성공적으로 체결되었습니다!")
+            else:
+                log.info("지갑 내용물이 그대로입니다. 아직 체결되지 않았거나, 대기 중입니다.")
+
+            # [하자 보수] 기존 코드에 있던 중복 time.sleep()을 제거하여 흐름을 깔끔하게 만들었습니다.
